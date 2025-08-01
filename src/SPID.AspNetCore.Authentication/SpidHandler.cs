@@ -26,15 +26,41 @@ using System.Web;
 
 namespace SPID.AspNetCore.Authentication
 {
-    public class SpidHandler(IOptionsMonitor<SpidOptions> options,
+    public class SpidHandler : RemoteAuthenticationHandler<SpidOptions>, IAuthenticationSignOutHandler
+    {
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogHandler _logHandler;
+        private readonly IIdpNameRetriever _nameRetriever;
+
+#if NET7_0 || NET6_0
+        public SpidHandler(IOptionsMonitor<SpidOptions> options,
             ILoggerFactory logger,
             UrlEncoder encoder,
             ISystemClock clock,
             IHttpClientFactory httpClientFactory,
             ILogHandler logHandler,
-            IIdpNameRetriever nameRetriever)
-        : RemoteAuthenticationHandler<SpidOptions>(options, logger, encoder, clock), IAuthenticationSignOutHandler
-    {
+            IIdpNameRetriever nameRetriever) : base(options, logger, encoder, clock)
+        {
+            _httpClientFactory = httpClientFactory;
+            _logHandler = logHandler;
+            _nameRetriever = nameRetriever;
+        }
+#endif
+
+#if NET8_0_OR_GREATER
+        public SpidHandler(IOptionsMonitor<SpidOptions> options,
+            ILoggerFactory logger,
+            UrlEncoder encoder,
+            IHttpClientFactory httpClientFactory,
+            ILogHandler logHandler,
+            IIdpNameRetriever nameRetriever) : base(options, logger, encoder) {
+                _httpClientFactory = httpClientFactory;
+                _logHandler = logHandler;
+                _nameRetriever = nameRetriever;
+             }
+#endif
+
+
         EventsHandler _eventsHandler;
         RequestHandler _requestGenerator;
 
@@ -71,7 +97,7 @@ namespace SPID.AspNetCore.Authentication
         {
             this.Logger.LogInformation("START HandleRequestAsync");
             _eventsHandler = new EventsHandler(Events);
-            _requestGenerator = new RequestHandler(Response, Logger, logHandler);
+            _requestGenerator = new RequestHandler(Response, Logger, _logHandler);
 
             // RemoteSignOutPath and CallbackPath may be the same, fall through if the message doesn't match.
             if (Options.RemoteSignOutPath.HasValue && Options.RemoteSignOutPath == Request.Path)
@@ -99,9 +125,9 @@ namespace SPID.AspNetCore.Authentication
             string authenticationRequestId = Guid.NewGuid().ToString();
 
             // Select the Identity Provider
-            var idpName = await nameRetriever.GetIdpName();
+            var idpName = await _nameRetriever.GetIdpName();
             this.Logger.LogInformation($"ipdName : {idpName}");
-            var idp = (await Options.GetIdentityProviders(httpClientFactory)).FirstOrDefault(x => x.Name == idpName);
+            var idp = (await Options.GetIdentityProviders(_httpClientFactory)).FirstOrDefault(x => x.Name == idpName);
 
             var securityTokenCreatingContext = await _eventsHandler.HandleSecurityTokenCreatingContext(Context,
                 Scheme,
@@ -214,7 +240,7 @@ namespace SPID.AspNetCore.Authentication
             var subjectNameId = properties.GetSubjectNameId();
             var sessionIndex = properties.GetSessionIndex();
 
-            var idp = (await Options.GetIdentityProviders(httpClientFactory)).FirstOrDefault(i => i.Name == idpName);
+            var idp = (await Options.GetIdentityProviders(_httpClientFactory)).FirstOrDefault(i => i.Name == idpName);
 
             var securityTokenCreatingContext = await _eventsHandler.HandleSecurityTokenCreatingContext(Context,
                 Scheme,
@@ -300,7 +326,7 @@ namespace SPID.AspNetCore.Authentication
                 return HandleRequestResult.Fail("Unsolicited logins are not allowed.");
             }
 
-            var idp = (await Options.GetIdentityProviders(httpClientFactory)).FirstOrDefault(x => x.Name == idpName);
+            var idp = (await Options.GetIdentityProviders(_httpClientFactory)).FirstOrDefault(x => x.Name == idpName);
 
             response.ValidateAuthnResponse(request, idp, serializedResponse);
             return null;
@@ -399,7 +425,7 @@ namespace SPID.AspNetCore.Authentication
 
                 var serializedResponse = Encoding.UTF8.GetString(Convert.FromBase64String(form["SAMLResponse"].FirstOrDefault()));
 
-                await logHandler.LogPostResponse(new PostResponse()
+                await _logHandler.LogPostResponse(new PostResponse()
                 {
                     SignedMessage = serializedResponse,
                     SAMLResponse = form["SAMLResponse"].FirstOrDefault(),
@@ -422,7 +448,7 @@ namespace SPID.AspNetCore.Authentication
             {
                 var serializedResponse = DecompressString(Request.Query["SAMLResponse"].FirstOrDefault());
 
-                await logHandler.LogRedirectResponse(new RedirectResponse()
+                await _logHandler.LogRedirectResponse(new RedirectResponse()
                 {
                     SignedMessage = serializedResponse,
                     SAMLResponse = Request.Query["SAMLResponse"].FirstOrDefault(),
@@ -452,7 +478,7 @@ namespace SPID.AspNetCore.Authentication
 
                 var serializedResponse = Encoding.UTF8.GetString(Convert.FromBase64String(form["SAMLResponse"][0]));
 
-                await logHandler.LogPostResponse(new PostResponse()
+                await _logHandler.LogPostResponse(new PostResponse()
                 {
                     SignedMessage = serializedResponse,
                     SAMLResponse = form["SAMLResponse"].FirstOrDefault(),
@@ -473,7 +499,7 @@ namespace SPID.AspNetCore.Authentication
             {
                 var serializedResponse = DecompressString(Request.Query["SAMLResponse"].FirstOrDefault());
 
-                await logHandler.LogRedirectResponse(new RedirectResponse()
+                await _logHandler.LogRedirectResponse(new RedirectResponse()
                 {
                     SignedMessage = serializedResponse,
                     SAMLResponse = Request.Query["SAMLResponse"].FirstOrDefault(),
